@@ -34,39 +34,32 @@
 ## Переменные — nodeA
 
 ```sh
-# --- идентификация ---
-NODE_HOSTNAME=""          # hostname сервера
-NODE_DOMAIN=""            # публичный FQDN (на него выписывается LE-сертификат)
+# --- переключатели ---
+# 0 = стандартная HTML-страница Caddy  |  1 = установить .NET 10
+INSTALL_DOTNET=0
 
-# --- роль ноды ---
-# пусто = nodeA является одновременно nodeZ (выход напрямую в Telegram DC)
+# 0 = не устанавливать  |  1 = установить (требует TG_API_ID и TG_API_HASH)
+INSTALL_TG=0
+
+# 0 = отключить IPv6  |  1 = оставить включённым
+ENABLE_IPV6=0
+
+# пусто = nodeA является nodeZ (MTProto → Telegram DC напрямую)
 # задан = nodeA форвардит MTProto дальше по цепочке
 NEXT_HOP=""
 
-# --- forward-proxy режим выхода ---
-# 0 = выход с текущей ноды  |  1 = выход через nodeZ (конец цепочки)
+# forward-proxy режим выхода:
+# 0 = с текущей ноды напрямую
+# 1 = SOCKS5 → NEXT_HOP → ... → nodeZ  (цепочка скрыта за SOCKS5)
+# 2 = HTTPS CONNECT → NEXT_HOP FP напрямую  (цепочка видна как proxy-to-proxy)
 FP_CHAIN=0
 
-# --- кредентиалы ---
-FP_CREDS=(
-  "httpproxy_user1:PASSWORD"
-  "httpproxy_user2:PASSWORD"
-)
-FP_EXTRA=0                # сгенерировать N дополнительных FP пользователей
+# --- идентификация ---
+NODE_HOSTNAME=""
+NODE_DOMAIN=""
 
-SOCKS5_CREDS=(
-  "socks5_service1:PASSWORD"
-  "socks5_service2:PASSWORD"
-)
-
-TELEMT_CREDS=(
-  "telemt_user1:32_HEX_SECRET"
-  "telemt_user2:32_HEX_SECRET"
-)
-TELEMT_EXTRA=0            # сгенерировать N дополнительных telemt пользователей
-
-# --- Telegram Local Server ---
-TG_API_ID=""              # пусто = не устанавливать
+# --- Telegram Local Server (заполнить если INSTALL_TG=1) ---
+TG_API_ID=""
 TG_API_HASH=""
 
 # --- fail2ban ---
@@ -74,8 +67,28 @@ FAIL2BAN_MAXRETRY=15
 FAIL2BAN_FINDTIME=300
 FAIL2BAN_BANTIME=-1       # -1 = бан навсегда
 
-# --- сеть ---
-ENABLE_IPV6=0
+# --- forward-proxy ---
+FP_CREDS=(
+  "httpproxy_user1:PASSWORD"
+  "httpproxy_user2:PASSWORD"
+)
+FP_EXTRA=0
+# FP_CHAIN=2: кредентиалы FP следующей ноды
+FP_CHAIN_UPSTREAM_USER=""
+FP_CHAIN_UPSTREAM_PASS=""
+
+# --- SOCKS5 (внутренний транспорт telemt) ---
+SOCKS5_CREDS=(
+  "socks5_service1:PASSWORD"
+  "socks5_service2:PASSWORD"
+)
+
+# --- telemt ---
+TELEMT_CREDS=(
+  "telemt_user1:32_HEX_SECRET"
+  "telemt_user2:32_HEX_SECRET"
+)
+TELEMT_EXTRA=0
 ```
 
 ---

@@ -4,64 +4,94 @@ set -uo pipefail
 [[ $EUID -ne 0 ]] && { echo "Run as root"; exit 1; }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# [USER] — заполни перед запуском
+# [ПЕРЕКЛЮЧАТЕЛИ]
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 0 = сервировать стандартную HTML-страницу  |  1 = установить .NET 10
+INSTALL_DOTNET=0
+
+# 0 = не устанавливать  |  1 = установить (требует TG_API_ID и TG_API_HASH)
+INSTALL_TG=0
+
+# 0 = отключить IPv6  |  1 = оставить включённым
+ENABLE_IPV6=0
+
+# пусто = nodeA является nodeZ (MTProto → Telegram DC напрямую)
+# задан = nodeA форвардит MTProto дальше по цепочке
+NEXT_HOP=""
+
+# forward-proxy режим выхода:
+# 0 = с текущей ноды напрямую
+# 1 = SOCKS5 → NEXT_HOP → ... → nodeZ  (цепочка скрыта за SOCKS5)
+# 2 = HTTPS CONNECT → NEXT_HOP FP напрямую  (цепочка видна как proxy-to-proxy)
+FP_CHAIN=0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [ИДЕНТИФИКАЦИЯ]
 # ─────────────────────────────────────────────────────────────────────────────
 NODE_HOSTNAME="nodeA"
 # полный домен; на него выписывается LE-сертификат
 NODE_DOMAIN="example.com"
 
-# пусто = nodeA является nodeZ (выход напрямую в Telegram DC)
-# задан = nodeA форвардит MTProto дальше по цепочке
-NEXT_HOP=""
-
-# 0 = forward-proxy выходит с текущей ноды
-# 1 = forward-proxy выходит через цепочку (SOCKS5 → NEXT_HOP → ... → nodeZ)
-FP_CHAIN=0
-
-# сгенерировать N доп. forward-proxy пользователей сверх статики
-FP_EXTRA=0
-# сгенерировать N доп. telemt пользователей сверх статики
-TELEMT_EXTRA=0
-
-# пусто → Telegram Local Server не ставится
+# ─────────────────────────────────────────────────────────────────────────────
+# [TELEGRAM LOCAL SERVER]  — заполнить если INSTALL_TG=1
+# ─────────────────────────────────────────────────────────────────────────────
 TG_API_ID=""
 TG_API_HASH=""
 
+# ─────────────────────────────────────────────────────────────────────────────
+# [FAIL2BAN]
+# ─────────────────────────────────────────────────────────────────────────────
 FAIL2BAN_MAXRETRY=15
 FAIL2BAN_FINDTIME=300
-FAIL2BAN_BANTIME=-1
-
-ENABLE_IPV6=0
+FAIL2BAN_BANTIME=-1       # -1 = бан навсегда
 
 # ─────────────────────────────────────────────────────────────────────────────
 # [STATIC] — предгенерированные кредентиалы
 # ─────────────────────────────────────────────────────────────────────────────
-# Генерация: openssl rand -base64 12 | tr -d '=/+'
+
+# forward-proxy: openssl rand -base64 12 | tr -d '=/+'
 FP_CREDS=(
   "httpproxy_service1:REPLACE_ME"
   "httpproxy_service2:REPLACE_ME"
   "httpproxy_user1:REPLACE_ME"
   "httpproxy_user2:REPLACE_ME"
 )
-# Генерация: openssl rand -base64 12 | tr -d '=/+'
+FP_EXTRA=0
+
+# FP_CHAIN=2: кредентиалы FP следующей ноды (NEXT_HOP)
+FP_CHAIN_UPSTREAM_USER="REPLACE_ME"
+FP_CHAIN_UPSTREAM_PASS="REPLACE_ME"
+
+# SOCKS5 (внутренний транспорт telemt): openssl rand -base64 12 | tr -d '=/+'
 SOCKS5_CREDS=(
   "socks5_service1:REPLACE_ME"
   "socks5_service2:REPLACE_ME"
   "socks5_user1:REPLACE_ME"
   "socks5_user2:REPLACE_ME"
 )
-# Генерация: openssl rand -hex 16  (ровно 32 hex символа)
+
+# telemt: openssl rand -hex 16  (ровно 32 hex символа)
 TELEMT_CREDS=(
   "telemt_user1:REPLACE_ME_32_HEX"
   "telemt_user2:REPLACE_ME_32_HEX"
   "telemt_user3:REPLACE_ME_32_HEX"
   "telemt_user4:REPLACE_ME_32_HEX"
 )
+TELEMT_EXTRA=0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # [DERIVED]
 # ─────────────────────────────────────────────────────────────────────────────
 TELEMT_TLS_DOMAIN="${NODE_DOMAIN}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [VALIDATION]
+# ─────────────────────────────────────────────────────────────────────────────
+if [[ "${INSTALL_TG}" -eq 1 && ( -z "${TG_API_ID}" || -z "${TG_API_HASH}" ) ]]; then
+  echo "[ERR] INSTALL_TG=1 но TG_API_ID или TG_API_HASH не заполнены"
+  exit 1
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # [DYNAMIC] — доп. кредентиалы
@@ -89,12 +119,13 @@ die() { echo "  [ERR] $1"; exit 1; }
 chk() { local rc=$?; [[ $rc -eq 0 ]] && ok "$1" || die "$1 (exit ${rc})"; }
 
 log "=== KawaProxy nodeA ==="
-log "hostname=${NODE_HOSTNAME}  domain=${NODE_DOMAIN}  next_hop=${NEXT_HOP:-exit}  fp_chain=${FP_CHAIN}"
+log "hostname=${NODE_HOSTNAME}  domain=${NODE_DOMAIN}  next_hop=${NEXT_HOP:-exit}"
+log "fp_chain=${FP_CHAIN}  install_dotnet=${INSTALL_DOTNET}  install_tg=${INSTALL_TG}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Система
 # ─────────────────────────────────────────────────────────────────────────────
-log "--- [1/6] system ---"
+log "--- [1/5] system ---"
 
 hostnamectl set-hostname "${NODE_HOSTNAME}"
 chk "hostname"
@@ -130,7 +161,7 @@ ok "ulimits"
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. UFW
 # ─────────────────────────────────────────────────────────────────────────────
-log "--- [2/6] ufw ---"
+log "--- [2/5] ufw ---"
 
 ufw --force reset
 ufw default deny incoming
@@ -144,7 +175,7 @@ chk "ufw"
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. fail2ban
 # ─────────────────────────────────────────────────────────────────────────────
-log "--- [3/6] fail2ban ---"
+log "--- [3/5] fail2ban ---"
 
 cat > /etc/fail2ban/jail.local <<EOF
 [sshd]
@@ -160,7 +191,7 @@ chk "fail2ban"
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. Caddy (xcaddy + forwardproxy + caddy-l4)
 # ─────────────────────────────────────────────────────────────────────────────
-log "--- [4/6] caddy ---"
+log "--- [4/5] caddy ---"
 
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
   | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -200,12 +231,34 @@ for entry in "${FP_CREDS[@]}"; do
   FP_AUTH_BLOCK+="        basic_auth ${u} ${p}"$'\n'
 done
 
-# Caddyfile: FP upstream (FP_CHAIN=1 → через SOCKS5 → NEXT_HOP)
+# Caddyfile: FP upstream по FP_CHAIN
 FP_UPSTREAM_LINE=""
-if [[ "${FP_CHAIN}" -eq 1 && -n "${NEXT_HOP}" ]]; then
-  _S5U="${SOCKS5_CREDS[0]%%:*}"
-  _S5P="${SOCKS5_CREDS[0]#*:}"
-  FP_UPSTREAM_LINE="        upstream socks5://${_S5U}:${_S5P}@127.0.0.1:8083"$'\n'
+if [[ -n "${NEXT_HOP}" ]]; then
+  case "${FP_CHAIN}" in
+    1)
+      _S5U="${SOCKS5_CREDS[0]%%:*}"
+      _S5P="${SOCKS5_CREDS[0]#*:}"
+      FP_UPSTREAM_LINE="        upstream socks5://${_S5U}:${_S5P}@127.0.0.1:8083"$'\n'
+      ;;
+    2)
+      FP_UPSTREAM_LINE="        upstream https://${FP_CHAIN_UPSTREAM_USER}:${FP_CHAIN_UPSTREAM_PASS}@${NEXT_HOP}:443"$'\n'
+      ;;
+  esac
+fi
+
+# Caddyfile: RP block
+if [[ "${INSTALL_DOTNET}" -eq 1 ]]; then
+  RP_BLOCK="        reverse_proxy localhost:8081"
+else
+  mkdir -p /var/www/html
+  cat > /var/www/html/index.html <<'HTMLEOF'
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Welcome</title>
+<style>body{font-family:sans-serif;max-width:480px;margin:4rem auto;color:#555}</style>
+</head><body><h2>Welcome</h2><p>Service is running.</p></body></html>
+HTMLEOF
+  RP_BLOCK="        root * /var/www/html
+        file_server"
 fi
 
 cat > /etc/caddy/Caddyfile <<EOF
@@ -227,23 +280,23 @@ ${FP_AUTH_BLOCK}${FP_UPSTREAM_LINE}        probe_resistance
     }
 
     handle {
-        reverse_proxy localhost:8081
+${RP_BLOCK}
     }
 }
 EOF
 chk "Caddyfile"
 
 # caddy-l4: SOCKS5 на 127.0.0.1:8083 (внутренний транспорт для telemt)
-_S5_CREDS_JSON="{"
+_S5_JSON="{"
 _first=true
 for entry in "${SOCKS5_CREDS[@]}"; do
   u="${entry%%:*}"
   p="${entry#*:}"
-  [[ "${_first}" == true ]] || _S5_CREDS_JSON+=","
-  _S5_CREDS_JSON+="\"${u}\":\"${p}\""
+  [[ "${_first}" == true ]] || _S5_JSON+=","
+  _S5_JSON+="\"${u}\":\"${p}\""
   _first=false
 done
-_S5_CREDS_JSON+="}"
+_S5_JSON+="}"
 
 cat > /etc/caddy/l4.json <<EOF
 {
@@ -255,7 +308,7 @@ cat > /etc/caddy/l4.json <<EOF
           "routes": [{
             "handle": [{
               "handler": "socks5",
-              "credentials": ${_S5_CREDS_JSON}
+              "credentials": ${_S5_JSON}
             }]
           }]
         }
@@ -272,7 +325,7 @@ chk "l4.json"
 chk "caddy adapt"
 
 python3 - <<'PYEOF'
-import json, sys
+import json
 with open('/etc/caddy/http_adapted.json') as f:
     cfg = json.load(f)
 with open('/etc/caddy/l4.json') as f:
@@ -283,7 +336,6 @@ with open('/etc/caddy/config.json', 'w') as f:
 PYEOF
 chk "caddy config merge"
 
-# Кастомный systemd unit: запуск по объединённому JSON конфигу
 cat > /etc/systemd/system/caddy.service <<'UNIT'
 [Unit]
 Description=Caddy
@@ -314,7 +366,7 @@ chk "caddy service"
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. telemt
 # ─────────────────────────────────────────────────────────────────────────────
-log "--- [5/6] telemt ---"
+log "--- [5/5] telemt ---"
 
 curl -fsSL https://raw.githubusercontent.com/telemt/telemt/main/install.sh \
   -o /tmp/telemt-install.sh
@@ -388,21 +440,24 @@ systemctl enable telemt --now
 chk "telemt service"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. .NET 10
+# [+] .NET 10
 # ─────────────────────────────────────────────────────────────────────────────
-log "--- [6/6] .NET 10 ---"
-
-wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb \
-  -O /tmp/ms-prod.deb
-dpkg -i /tmp/ms-prod.deb
-apt-get update -qq
-apt-get install -y -qq dotnet-sdk-10.0
-chk ".NET 10"
+if [[ "${INSTALL_DOTNET}" -eq 1 ]]; then
+  log "--- [+] .NET 10 ---"
+  wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb \
+    -O /tmp/ms-prod.deb
+  dpkg -i /tmp/ms-prod.deb
+  apt-get update -qq
+  apt-get install -y -qq dotnet-sdk-10.0
+  chk ".NET 10"
+else
+  log "--- [+] INSTALL_DOTNET=0 --- skip"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # [+] Telegram Local Server
 # ─────────────────────────────────────────────────────────────────────────────
-if [[ -n "${TG_API_ID}" && -n "${TG_API_HASH}" ]]; then
+if [[ "${INSTALL_TG}" -eq 1 ]]; then
   log "--- [+] Telegram Local Server (build ~10 min) ---"
   apt-get install -y -qq cmake g++ make zlib1g-dev libssl-dev gperf
   chk "tg-bot-api build deps"
@@ -437,7 +492,7 @@ EOF
   systemctl enable telegram-bot-api --now
   chk "telegram-bot-api service"
 else
-  log "--- [+] TG_API_ID empty --- skip"
+  log "--- [+] INSTALL_TG=0 --- skip"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -449,8 +504,8 @@ echo ""
 echo "==============================="
 echo "  FORWARD PROXY"
 echo "==============================="
-echo "  Host:  ${NODE_DOMAIN}:443"
-echo "  Chain: ${FP_CHAIN}  (0=direct, 1=via nodeZ)"
+echo "  Host:    ${NODE_DOMAIN}:443"
+echo "  FP_CHAIN: ${FP_CHAIN}  (0=direct 1=socks5 2=https-connect)"
 echo ""
 for entry in "${FP_CREDS[@]}"; do
   printf "  %-32s %s\n" "${entry%%:*}" "${entry#*:}"
@@ -484,8 +539,8 @@ for svc in caddy telemt fail2ban; do
     && printf "  %-24s active\n" "${svc}" \
     || printf "  %-24s FAILED\n" "${svc}"
 done
-printf "  %-24s installed\n" "dotnet"
-[[ -n "${TG_API_ID}" ]] && {
+[[ "${INSTALL_DOTNET}" -eq 1 ]] && printf "  %-24s installed\n" "dotnet"
+[[ "${INSTALL_TG}" -eq 1 ]] && {
   systemctl is-active --quiet telegram-bot-api \
     && printf "  %-24s active\n" "telegram-bot-api" \
     || printf "  %-24s FAILED\n" "telegram-bot-api"

@@ -53,8 +53,9 @@ caddy :8443
   │
   ├─ HTTP CONNECT (forward-proxy с аутентификацией)
   │       │
-  │       ├─ режим "прямой выход":  → target напрямую с текущей ноды
-  │       └─ режим "через nodeZ":   → upstream = следующая нода → ... → nodeZ → target
+  │       ├─ FP_CHAIN=0  прямой выход с текущей ноды → target
+  │       ├─ FP_CHAIN=1  SOCKS5 127.0.0.1:8083 → NEXT_HOP → ... → nodeZ → target  (цепочка скрыта)
+  │       └─ FP_CHAIN=2  HTTPS CONNECT → NEXT_HOP FP → ... → nodeZ → target  (цепочка видна)
   │
   └─ всё остальное (GET/POST, сканеры без auth) → reverse-proxy
           │
