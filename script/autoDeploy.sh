@@ -60,6 +60,7 @@ TELEMT_CREDS=(
 )
 TELEMT_EXTRA=0
 
+
 ###
 ###
 ##########################
@@ -67,7 +68,7 @@ TELEMT_EXTRA=0
 ##########################
 ###
 ###
-###		USER PARAMS
+###		CHECK PARAMS
 ###
 ###
 
@@ -109,6 +110,66 @@ echo "  [x] Caddy"
 ###
 ###
 ###		DEFAULT SETUP
+###
+###
+
+
+echo "[1/5] Hostname..."
+hostnamectl set-hostname "$NODE_HOSTNAME"
+grep -qF "127.0.1.1 $NODE_HOSTNAME" /etc/hosts \
+  || echo "127.0.1.1 $NODE_HOSTNAME" >> /etc/hosts
+
+echo "[2/5] IPv6..."
+if [[ "$ENABLE_IPV6" == "0" ]]; then
+  cat > /etc/sysctl.d/99-no-ipv6.conf <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+else
+  rm -f /etc/sysctl.d/99-no-ipv6.conf
+fi
+sysctl --system
+
+echo "[3/5] Packages..."
+apt-get update -q
+apt-get install -y --no-install-recommends \
+  curl wget git ca-certificates gnupg ufw fail2ban openssl xxd \
+  debian-keyring debian-archive-keyring apt-transport-https
+
+echo "[4/5] ulimits..."
+grep -qxF '* soft nofile 65535' /etc/security/limits.conf \
+  || echo '* soft nofile 65535' >> /etc/security/limits.conf
+grep -qxF '* hard nofile 65535' /etc/security/limits.conf \
+  || echo '* hard nofile 65535' >> /etc/security/limits.conf
+
+echo "[5/5] UFW + fail2ban..."
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw --force enable
+
+cat > /etc/fail2ban/jail.local <<EOF
+[sshd]
+enabled  = true
+maxretry = $FAIL2BAN_MAXRETRY
+findtime = $FAIL2BAN_FINDTIME
+bantime  = $FAIL2BAN_BANTIME
+EOF
+systemctl enable fail2ban
+systemctl restart fail2ban
+
+
+###
+###
+##########################
+##########################
+##########################
+###
+###
+###
 ###
 ###
 
