@@ -9,8 +9,21 @@
 ## Обоснование
 Официальных бинарных пакетов нет — только сборка из исходников через cmake.
 
+## Предусловия
+- Базовая ОС готова (задача 3)
+- `INSTALL_TG=1`, `TG_API_ID`, `TG_API_HASH` заданы (задача 1)
+
+## Результат
+- `/usr/local/bin/telegram-bot-api` установлен
+- `systemctl is-active telegram-bot-api` → `active` на порту `:8082`
+
 ## Ссылки
 - [telegram-bot-api GitHub](https://github.com/tdlib/telegram-bot-api)
+
+## Связанные задачи
+| Задача | Параметры |
+|---|---|
+| [1 — Переменные](1-variables.md) | `INSTALL_TG`, `TG_API_ID`, `TG_API_HASH` |
 
 ## Детали
 

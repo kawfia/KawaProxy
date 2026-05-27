@@ -9,8 +9,21 @@
 ## Обоснование
 Официальные пакеты Microsoft для Ubuntu — единственный поддерживаемый способ установки .NET 10 на Linux Ubuntu 24.04.
 
+## Предусловия
+- Базовая ОС готова (задача 3)
+- `INSTALL_DOTNET=1` (задача 1)
+
+## Результат
+- `dotnet --version` → `10.x`
+- **Не создаёт**: backend-приложение (это отдельный компонент вне скрипта)
+
 ## Ссылки
 - [.NET on Linux Ubuntu](https://learn.microsoft.com/dotnet/core/install/linux-ubuntu)
+
+## Связанные задачи
+| Задача | Параметры |
+|---|---|
+| [1 — Переменные](1-variables.md) | `INSTALL_DOTNET` |
 
 ## Детали
 

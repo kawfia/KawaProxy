@@ -9,9 +9,24 @@ Caddy с поддержкой HTTP CONNECT forward proxy.
 ## Обоснование
 Стандартный пакет Caddy из apt не поддерживает сторонние плагины — xcaddy компилирует бинарник с нужным модулем.
 
+## Предусловия
+- Базовая ОС готова (задача 3)
+- Пакеты `golang-go`, `curl` установлены
+
+## Результат
+- `/usr/bin/caddy` собран с плагином `forwardproxy`
+- `setcap cap_net_bind_service=+ep /usr/bin/caddy` применён
+- Systemd-сервис зарегистрирован и **остановлен**
+- **Не создаёт**: `/etc/caddy/Caddyfile` — это задача 9
+
 ## Ссылки
 - [xcaddy](https://github.com/caddyserver/xcaddy)
 - [Caddy forwardproxy](https://github.com/caddyserver/forwardproxy)
+
+## Связанные задачи
+| Задача | Роль |
+|---|---|
+| [9 — Настройка Caddy](9-caddy-config.md) | конфигурация после установки бинарника |
 
 ## Детали
 

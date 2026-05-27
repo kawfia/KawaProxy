@@ -9,8 +9,23 @@
 ## Обоснование
 `mask=true` + `tls_emulation=true` + `unknown_sni_action=mask` обеспечивают антидетект — сервер выглядит как обычный TLS-сайт.
 
+## Предусловия
+- telemt установлен, `/etc/telemt/` существует (задача 4)
+- `NODE_DOMAIN`, `TELEMT_CREDS` заданы (задача 1)
+
+## Результат
+- `/etc/telemt/telemt.toml` записан
+- `systemctl is-active telemt` → `active`
+- **Не создаёт**: `/etc/caddy/Caddyfile` — это задача 9
+
 ## Ссылки
 - [Config Params RU](https://github.com/telemt/telemt/blob/main/docs/Config_params/CONFIG_PARAMS.ru.md)
+
+## Связанные задачи
+| Задача | Параметры |
+|---|---|
+| [1 — Переменные](1-variables.md) | `NODE_DOMAIN`, `TELEMT_CREDS`, `TELEMT_EXTRA` |
+| [4 — Установка telemt](4-telemt-install.md) | путь `/etc/telemt/`, systemd-сервис |
 
 ## Детали
 

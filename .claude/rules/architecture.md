@@ -6,9 +6,9 @@
 
 | Роль | Описание | Состав |
 |---|---|---|
-| **nodeA** | Первая нода. Единственная нода с реальным бэкендом | telemt · caddy · backend (Part 1) · Telegram Local Server (опц.) |
+| **nodeA** | Первая нода в цепочке. Единственная нода с реальным бэкендом | telemt · caddy · backend (Part 1) · Telegram Local Server (опц.) |
 | **nodeN** | Промежуточная нода | telemt · caddy |
-| **nodeZ** | Конечная нода | telemt · caddy |
+| **nodeZ** | Конечная нода (интернет-сторона) | telemt · caddy |
 
 > Минимальная цепочка — **1 нода (nodeA = nodeZ)**. BACK_HOP не задаётся.
 > Каждая нода соединяется с Telegram DC **независимо и напрямую**.
@@ -21,7 +21,6 @@
 |---|---|---|
 | `BACK_HOP` | все ноды кроме nodeA | Адрес предыдущей ноды или nodeA напрямую |
 | `BACK_HOP` | nodeA | `localhost:8081` (Part 1 бэкенда) |
-| `FP_CHAIN` | все ноды | `0` = выход напрямую · `1` = HTTPS CONNECT цепочка |
 
 ---
 
@@ -43,9 +42,7 @@
 ```
 caddy :8443
   │
-  ├─ HTTP CONNECT + валидный Basic Auth → forward-proxy
-  │     ├─ FP_CHAIN=0  → target напрямую с текущей ноды
-  │     └─ FP_CHAIN=1  → HTTPS CONNECT → BACK_HOP → ... → target
+  ├─ HTTP CONNECT + валидный Basic Auth → forward-proxy → internet напрямую
   │
   ├─ HTTP CONNECT без auth → probe_resistance
   │     └─ 200 OK + HTML (запрос падает в reverse-proxy, прокси не детектируется)
@@ -117,7 +114,7 @@ CONNECT без auth → 200 OK + тот же сайт (probe_resistance).
 - `mask=true`, `tls_emulation=true` в telemt — маскирует под обычный TLS-сервер
 - `unknown_sni_action=mask` — неизвестный SNI уходит на caddy, не дропается
 - Caddy получает LE для каждой ноды.
-- telemt - транслирует сырой запрос без обработки к Caddy:8443
-- Приневалидном секрете (к telemt) сырой запрос уходит в Caddy:8443
+- telemt — транслирует сырой запрос без обработки к Caddy:8443
+- При невалидном секрете (к telemt) сырой запрос уходит в Caddy:8443
 
 ---
