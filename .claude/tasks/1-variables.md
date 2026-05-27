@@ -58,7 +58,7 @@
 ### Кредентиалы
 | Переменная | Формат | Генерация | Описание |
 |---|---|---|---|
-| `FP_CREDS` | `"user:pass"` | `openssl rand -base64 12 \| tr -d '=/+'` | Кредентиалы forward proxy (HTTP CONNECT) |
+| `FP_CREDS` | `("user:pass" ...)` | `openssl rand -base64 12 \| tr -d '=/+'` | Кредентиалы forward proxy (HTTP CONNECT). Bash-массив |
 | `FP_EXTRA` | целое | — | Количество автогенерируемых дополнительных FP-пользователей |
-| `TELEMT_CREDS` | `"alias:32hex"` | `openssl rand -hex 16` | MTProto-секреты. Ровно 32 hex-символа |
+| `TELEMT_CREDS` | `("alias:32hex" ...)` | `openssl rand -hex 16` | MTProto-секреты. Ровно 32 hex-символа. Bash-массив |
 | `TELEMT_EXTRA` | целое | — | Количество автогенерируемых telemt-пользователей |
