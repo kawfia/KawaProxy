@@ -261,12 +261,30 @@ HTMLEOF
         file_server"
 fi
 
+# Caddyfile: SOCKS5 credentials block для layer4
+_S5_CREDS_BLOCK=""
+for entry in "${SOCKS5_CREDS[@]}"; do
+  u="${entry%%:*}"
+  p="${entry#*:}"
+  _S5_CREDS_BLOCK+="                credentials ${u} ${p}"$'\n'
+done
+
 cat > /etc/caddy/Caddyfile <<EOF
 {
     http_port  80
     https_port 8443
     admin      off
     order forward_proxy before reverse_proxy
+
+    layer4 {
+        127.0.0.1:8083 {
+            route {
+                socks5 {
+                    commands CONNECT ASSOCIATE
+${_S5_CREDS_BLOCK}                }
+            }
+        }
+    }
 }
 
 ${NODE_DOMAIN} {
@@ -285,79 +303,6 @@ ${RP_BLOCK}
 }
 EOF
 chk "Caddyfile"
-
-# caddy-l4: SOCKS5 на 127.0.0.1:8083 (внутренний транспорт для telemt)
-_S5_JSON="{"
-_first=true
-for entry in "${SOCKS5_CREDS[@]}"; do
-  u="${entry%%:*}"
-  p="${entry#*:}"
-  [[ "${_first}" == true ]] || _S5_JSON+=","
-  _S5_JSON+="\"${u}\":\"${p}\""
-  _first=false
-done
-_S5_JSON+="}"
-
-cat > /etc/caddy/l4.json <<EOF
-{
-  "apps": {
-    "layer4": {
-      "servers": {
-        "socks5": {
-          "listen": ["127.0.0.1:8083"],
-          "routes": [{
-            "handle": [{
-              "handler": "socks5",
-              "credentials": ${_S5_JSON}
-            }]
-          }]
-        }
-      }
-    }
-  }
-}
-EOF
-chk "l4.json"
-
-# Объединяем Caddyfile (http) и l4.json (layer4) в единый конфиг
-/usr/bin/caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile \
-  > /etc/caddy/http_adapted.json
-chk "caddy adapt"
-
-python3 - <<'PYEOF'
-import json
-with open('/etc/caddy/http_adapted.json') as f:
-    cfg = json.load(f)
-with open('/etc/caddy/l4.json') as f:
-    l4 = json.load(f)
-cfg['apps']['layer4'] = l4['apps']['layer4']
-with open('/etc/caddy/config.json', 'w') as f:
-    json.dump(cfg, f, indent=2)
-PYEOF
-chk "caddy config merge"
-
-cat > /etc/systemd/system/caddy.service <<'UNIT'
-[Unit]
-Description=Caddy
-Documentation=https://caddyserver.com/docs/
-After=network.target network-online.target
-Requires=network-online.target
-
-[Service]
-Type=notify
-User=root
-ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/config.json
-ExecReload=/usr/bin/caddy reload --config /etc/caddy/config.json --force
-TimeoutStopSec=5s
-LimitNOFILE=1048576
-PrivateTmp=true
-ProtectSystem=full
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-chk "caddy systemd unit"
 
 systemctl daemon-reload
 systemctl enable caddy --now
@@ -424,12 +369,13 @@ listen    = "127.0.0.1:9091"
 whitelist = ["127.0.0.0/8"]
 
 [censorship]
-tls_domain    = "${TELEMT_TLS_DOMAIN}"
-mask          = true
-mask_host     = "127.0.0.1"
-mask_port     = 8443
-tls_emulation = true
-tls_front_dir = "/etc/telemt/tlsfront"
+tls_domain         = "${TELEMT_TLS_DOMAIN}"
+unknown_sni_action = "mask"
+mask               = true
+mask_host          = "127.0.0.1"
+mask_port          = 8443
+tls_emulation      = true
+tls_front_dir      = "/etc/telemt/tlsfront"
 ${UPSTREAM_BLOCK}
 [access.users]
 ${TELEMT_USERS_TOML}
@@ -504,7 +450,7 @@ echo ""
 echo "==============================="
 echo "  FORWARD PROXY"
 echo "==============================="
-echo "  Host:    ${NODE_DOMAIN}:443"
+echo "  Host:     ${NODE_DOMAIN}:443"
 echo "  FP_CHAIN: ${FP_CHAIN}  (0=direct 1=socks5 2=https-connect)"
 echo ""
 for entry in "${FP_CREDS[@]}"; do

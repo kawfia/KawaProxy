@@ -7,8 +7,8 @@
 | Компонент | Репозиторий / Документация |
 |---|---|
 | telemt | https://github.com/telemt/telemt |
-| telemt Quick Start RU | https://github.com/telemt/telemt/blob/main/docs/QUICK_START_GUIDE.ru.md |
-| telemt Double Hop RU | https://github.com/telemt/telemt/blob/main/docs/VPS_DOUBLE_HOP.ru.md |
+| telemt Quick Start RU | https://github.com/telemt/telemt/blob/main/docs/Quick_start/QUICK_START_GUIDE.ru.md |
+| telemt Double Hop RU | https://github.com/telemt/telemt/blob/main/docs/Setup_examples/VPS_DOUBLE_HOP.ru.md |
 | telemt Config Params RU | https://github.com/telemt/telemt/blob/main/docs/Config_params/CONFIG_PARAMS.ru.md |
 | Caddy forwardproxy | https://github.com/caddyserver/forwardproxy |
 | caddy-l4 | https://github.com/mholt/caddy-l4 |
@@ -16,16 +16,19 @@
 | Telegram Bot API (Local Server) | https://github.com/tdlib/telegram-bot-api |
 | .NET 10 Linux install | https://learn.microsoft.com/dotnet/core/install/linux-ubuntu |
 
+> **Заметка:** официальное имя конфигурационного файла telemt — `telemt.toml`
+> (путь `/etc/telemt/telemt.toml`). В старых скриптах встречается `config.toml` — это устаревший вариант.
+
 ---
 
 ## Задачи приложений
 
 | Приложение | Задача |
 |---|---|
-| **telemt** | Слушает :443. Пропускает MTProto (префикс `ee`) вперёд по цепочке или напрямую в Telegram DC. Всё остальное TCP-splice → caddy :8443. |
+| **telemt** | Слушает :443. Пропускает MTProto (префикс `ee`) вперёд по цепочке или напрямую в Telegram DC. Всё остальное TCP-splice → caddy :8443. Параметр `unknown_sni_action = "mask"` направляет неизвестный SNI на caddy вместо дропа — снижает детектируемость. |
 | **caddy forward-proxy** | HTTP CONNECT для клиентов. Выход — с текущей ноды или через nodeZ (задаётся при установке). |
-| **caddy reverse-proxy** | Антисканерная защита. Отдаёт трафик без валидного auth обратно: nodeA → .NET 10, nodeN/nodeZ → предыдущая нода. |
-| **caddy-l4 SOCKS5** | Внутренний транспорт (:8083, только 127.0.0.1). Принимает MTProto от telemt и отправляет на NEXT_HOP:443. |
+| **caddy reverse-proxy** | Антисканерная защита. Отдаёт трафик без валидного auth обратно: nodeA → .NET 10, nodeN/nodeZ → предыдущая нода (BACK_HOP). |
+| **caddy-l4 SOCKS5** | Внутренний транспорт (:8083, только 127.0.0.1). Конфигурируется через блок `layer4 {}` в глобальных опциях Caddyfile. Принимает MTProto от telemt и отправляет на NEXT_HOP:443. |
 | **.NET 10 minimal API** | Backend на nodeA. Отдаёт легитимный ответ сканерам через caddy RP. |
 | **Telegram Local Server** | Локальный Bot API сервер на nodeA (:8082). |
 
@@ -96,46 +99,51 @@ TELEMT_EXTRA=0
 ## Переменные — nodeN
 
 ```sh
-# --- идентификация ---
-NODE_HOSTNAME=""          # hostname сервера
-NODE_DOMAIN=""            # публичный FQDN (на него выписывается LE-сертификат)
+# --- переключатели ---
+# 0 = отключить IPv6  |  1 = оставить включённым
+ENABLE_IPV6=0
 
-# --- роль ноды ---
 # пусто = нода является nodeZ (выход напрямую в Telegram DC)
 # задан = нода форвардит MTProto дальше по цепочке
 NEXT_HOP=""
 
-# --- предыдущая нода (для caddy reverse-proxy антисканер) ---
-# всегда задан: сканер уходит на предыдущую ноду → ... → nodeA → .NET 10
-BACK_HOP=""
-
-# --- forward-proxy режим выхода ---
+# forward-proxy режим выхода:
 # 0 = выход с текущей ноды  |  1 = выход через nodeZ (конец цепочки)
 FP_CHAIN=0
 
-# --- кредентиалы ---
-FP_CREDS=(
-  "httpproxy_user1:PASSWORD"
-  "httpproxy_user2:PASSWORD"
-)
-FP_EXTRA=0
+# --- идентификация ---
+NODE_HOSTNAME=""          # hostname сервера
+NODE_DOMAIN=""            # публичный FQDN (на него выписывается LE-сертификат)
 
-SOCKS5_CREDS=(
-  "socks5_service1:PASSWORD"
-  "socks5_service2:PASSWORD"
-)
-
-TELEMT_CREDS=(
-  "telemt_user1:32_HEX_SECRET"
-  "telemt_user2:32_HEX_SECRET"
-)
-TELEMT_EXTRA=0
+# --- предыдущая нода (для caddy reverse-proxy антисканер) ---
+# всегда задан: сканер уходит на предыдущую ноду → ... → nodeA → .NET 10
+BACK_HOP=""
 
 # --- fail2ban ---
 FAIL2BAN_MAXRETRY=15
 FAIL2BAN_FINDTIME=300
 FAIL2BAN_BANTIME=-1
 
+# --- forward-proxy ---
+FP_CREDS=(
+  "httpproxy_user1:PASSWORD"
+  "httpproxy_user2:PASSWORD"
+)
+FP_EXTRA=0
+
+# --- SOCKS5 (внутренний транспорт telemt) ---
+SOCKS5_CREDS=(
+  "socks5_service1:PASSWORD"
+  "socks5_service2:PASSWORD"
+)
+
+# --- telemt ---
+TELEMT_CREDS=(
+  "telemt_user1:32_HEX_SECRET"
+  "telemt_user2:32_HEX_SECRET"
+)
+TELEMT_EXTRA=0
+
 # --- сеть ---
-ENABLE_IPV6=0
+# (задаётся переключателем ENABLE_IPV6 выше)
 ```

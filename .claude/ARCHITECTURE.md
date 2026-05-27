@@ -60,7 +60,7 @@ caddy :8443
   └─ всё остальное (GET/POST, сканеры без auth) → reverse-proxy
           │
           ├─ nodeA  → localhost:8081  (.NET 10 minimal API)
-          └─ nodeN / nodeZ  → предыдущая нода в цепочке
+          └─ nodeN / nodeZ  → предыдущая нода в цепочке (BACK_HOP)
 ```
 
 ---
@@ -79,20 +79,29 @@ caddy :8443
 
 Клиент видит один адрес (nodeA). Секрет MTProto не меняется никогда.
 
-### HTTP forward-proxy — режим "прямой выход"
+### HTTP forward-proxy — режим "прямой выход" (FP_CHAIN=0)
 
 ```
 Клиент → HTTP CONNECT → nodeA/nodeN/nodeZ:443
   → caddy FP → target (выход с текущей ноды)
 ```
 
-### HTTP forward-proxy — режим "выход через nodeZ"
+### HTTP forward-proxy — режим "выход через nodeZ" (FP_CHAIN=1)
 
 ```
 Клиент → HTTP CONNECT → nodeA:443
-  → caddy FP (upstream = nodeN)
-    → caddy FP (upstream = nodeZ)
-      → caddy FP → target (выход с nodeZ)
+  → caddy FP → SOCKS5:8083 → nodeN:443
+    → caddy FP → SOCKS5:8083 → nodeZ:443
+      → caddy FP → target (цепочка скрыта)
+```
+
+### HTTP forward-proxy — режим "выход через nodeZ" (FP_CHAIN=2)
+
+```
+Клиент → HTTP CONNECT → nodeA:443
+  → caddy FP (upstream = nodeN FP)
+    → caddy FP (upstream = nodeZ FP)
+      → caddy FP → target (цепочка видна как proxy-to-proxy)
 ```
 
 Режим выхода задаётся один раз при установке ноды.
@@ -159,7 +168,9 @@ caddy :8443
 
 ## Конфигурационные шаблоны
 
-### telemt — config.toml
+### telemt — telemt.toml
+
+> Официальный путь: `/etc/telemt/telemt.toml`
 
 ```toml
 [general]
@@ -184,12 +195,13 @@ listen    = "127.0.0.1:9091"
 whitelist = ["127.0.0.0/8"]
 
 [censorship]
-tls_domain    = "TELEMT_TLS_DOMAIN"
-mask          = true
-mask_host     = "127.0.0.1"
-mask_port     = 8443
-tls_emulation = true
-tls_front_dir = "/etc/telemt/tlsfront"
+tls_domain         = "TELEMT_TLS_DOMAIN"
+mask               = true
+mask_host          = "127.0.0.1"
+mask_port          = 8443
+tls_emulation      = true
+tls_front_dir      = "/etc/telemt/tlsfront"
+unknown_sni_action = "mask"   # направить неизвестный SNI на caddy вместо дропа
 
 # --- только для nodeA / nodeN (NEXT_HOP задан) ---
 [upstream]
@@ -208,12 +220,25 @@ USER_ALIAS = "32_HEX_SECRET"   # openssl rand -hex 16
 
 ### Caddy — Caddyfile (nodeA)
 
+SOCKS5 для caddy-l4 задаётся прямо в глобальном блоке Caddyfile — отдельный JSON-конфиг не нужен.
+
 ```caddyfile
 {
     http_port  80
     https_port 8443
     admin      off
     order forward_proxy before reverse_proxy
+
+    layer4 {
+        127.0.0.1:8083 {
+            route {
+                socks5 {
+                    commands CONNECT ASSOCIATE
+                    credentials SOCKS5_USER SOCKS5_PASS
+                }
+            }
+        }
+    }
 }
 
 NODE_DOMAIN {
@@ -225,7 +250,8 @@ NODE_DOMAIN {
         probe_resistance
         hide_ip
         hide_via
-        # режим "через nodeZ": добавить upstream → NEXT_HOP:443
+        # FP_CHAIN=1: upstream socks5://127.0.0.1:8083
+        # FP_CHAIN=2: upstream https://FP_CHAIN_USER:FP_CHAIN_PASS@NEXT_HOP:443
     }
 
     handle {
@@ -242,6 +268,17 @@ NODE_DOMAIN {
     https_port 8443
     admin      off
     order forward_proxy before reverse_proxy
+
+    layer4 {
+        127.0.0.1:8083 {
+            route {
+                socks5 {
+                    commands CONNECT ASSOCIATE
+                    credentials SOCKS5_USER SOCKS5_PASS
+                }
+            }
+        }
+    }
 }
 
 NODE_DOMAIN {
@@ -253,39 +290,16 @@ NODE_DOMAIN {
         probe_resistance
         hide_ip
         hide_via
-        # режим "через nodeZ": добавить upstream → NEXT_HOP:443
+        # FP_CHAIN=1: upstream socks5://127.0.0.1:8083
+        # FP_CHAIN=2: upstream https://FP_CHAIN_USER:FP_CHAIN_PASS@NEXT_HOP:443
     }
 
     handle {
         # reverse_proxy → ПРЕДЫДУЩАЯ нода (антисканер)
-        reverse_proxy PREV_HOP:443 {
+        reverse_proxy BACK_HOP:443 {
             transport http { tls }
         }
     }
-}
-```
-
-### caddy-l4 — SOCKS5 (все ноды, 127.0.0.1:8083)
-
-```json
-{
-  "apps": {
-    "layer4": {
-      "servers": {
-        "socks5": {
-          "listen": ["127.0.0.1:8083"],
-          "routes": [{
-            "handle": [{
-              "handler": "socks5",
-              "credentials": {
-                "SOCKS5_USER": "SOCKS5_PASS"
-              }
-            }]
-          }]
-        }
-      }
-    }
-  }
 }
 ```
 
@@ -358,6 +372,9 @@ telemt нативно не поддерживает форвардинг MTProto
 caddy-l4 принимает соединение и устанавливает исходящий TCP до `NEXT_HOP:443`.
 Зашифрованный MTProto-поток передаётся без расшифровки на промежуточных нодах.
 SOCKS5 слушает только на `127.0.0.1` — не виден снаружи.
+
+SOCKS5 в caddy-l4 конфигурируется через блок `layer4 {}` в глобальных опциях Caddyfile —
+отдельный JSON API-конфиг (`l4.json`) не требуется.
 
 ---
 
