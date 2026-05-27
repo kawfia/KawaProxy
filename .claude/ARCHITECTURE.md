@@ -1,81 +1,158 @@
-# ARCHITECTURE.md — KawaProxy
+# ARCHITECTURE v2 — KawaProxy
 
-## Концепция
+## Легенда
 
-Цепочка Ubuntu-нод (Ubuntu 24.04), где каждая нода технически идентична по ПО.
-Роль ноды определяется только конфигурационной переменной `NEXT_HOP`:
+### Клиент
 
-- **`NEXT_HOP=""`** → **node0** (exit): MTProto уходит на Telegram DC, REST — на backend `:8081`
-- **`NEXT_HOP="host:443"`** → **nodeN** (chain): весь трафик пробрасывается на следующую ноду
+Доверенный хост, которому выдаются креды и DNS-адреса для использования сети.
 
-Клиент может подключиться к любой ноде в цепочке — цепочка просто станет короче.
+- Подключается по MTProto или HTTP forward-proxy к **любой** ноде цепочки
+- Видит соединение как будто между ним и целью **всегда один сервер**
+- Никогда не меняет учётные данные при смене ноды — меняется только DNS-адрес
+
+### Роли нод
+
+| Роль | Описание | Программный состав |
+|---|---|---|
+| **nodeA** | Первая (ближайшая к клиенту) нода | telemt · caddy (RP + FP) · .NET 10 minimal API · Telegram Local Server |
+| **nodeN** | Любая промежуточная нода | telemt · caddy (RP + FP) |
+| **nodeZ** | Конечная нода (ближайшая к цели) | telemt · caddy (RP + FP) |
+
+> nodeA может быть одновременно nodeZ: один сервер способен форвардить MTProto
+> напрямую в Telegram DC, минуя какие-либо промежуточные ноды.
+> Минимальная цепочка — **1 нода (nodeA = nodeZ)**.
 
 ---
 
-## Схема трафика на каждой ноде
+## Схема трафика
+
+### telemt — входная точка (порт :443)
 
 ```
-client
-  │  TLS 1.3 :443
-  ▼
-telemt  (ee mode — TLS-fronting, неотличим от HTTPS)
+Входящее TLS-соединение :443
   │
-  ├─ MTProto-пакет
-  │       └─→  SOCKS5 127.0.0.1:8083  (caddy-l4, internal)
-  │                     │
-  │                     ├─ nodeN: → NEXT_HOP:443  (следующий telemt)
-  │                     └─ node0: → Telegram DC напрямую
+  ├─ MTProto (префикс ee)  ──────────────────────────────────────────────┐
+  │                                                                      │
+  └─ не MTProto (TLS, HTTPS, сканер) → TCP-splice → caddy :8443          │
+                                                                         │
+              ┌──────────────────────────────────────────────────────────┘
+              │  nodeA / nodeN
+              ▼
+        SOCKS5 127.0.0.1:8083  (caddy-l4, internal)
+              → следующая нода (NEXT_HOP):443
+              │
+              │  nodeZ (или nodeA без NEXT_HOP)
+              ▼
+        Telegram DC напрямую
+```
+
+### Caddy — обработка не-MTProto трафика (порт :8443, internal)
+
+```
+caddy :8443
   │
-  └─ non-MTProto TLS  (TCP-splice, TLS не терминируется telemt)
-          └─→  127.0.0.1:8443  [Caddy]
-                    │  (Caddy сам терминирует TLS, LE-сертификат)
-                    │
-                    ├─ HTTP CONNECT  →  caddy FP (forward proxy)
-                    │                    ├─ nodeN: upstream = NEXT_HOP:443
-                    │                    └─ node0: upstream = открытый интернет
-                    │
-                    └─ GET / POST    →  caddy RP (reverse proxy)
-                                         ├─ nodeN: NEXT_HOP:443
-                                         └─ node0: localhost:8081 (backend)
+  ├─ HTTP CONNECT (forward-proxy с аутентификацией)
+  │       │
+  │       ├─ режим "прямой выход":  → target напрямую с текущей ноды
+  │       └─ режим "через nodeZ":   → upstream = следующая нода → ... → nodeZ → target
+  │
+  └─ всё остальное (GET/POST, сканеры без auth) → reverse-proxy
+          │
+          ├─ nodeA  → localhost:8081  (.NET 10 minimal API)
+          └─ nodeN / nodeZ  → предыдущая нода в цепочке
 ```
 
 ---
 
-## Почему один порт :443
+## Цепочка для клиента
 
-- Клиент всегда подключается только к `:443`
-- telemt мультиплексирует: MTProto → SOCKS5, всё остальное → TCP-splice на Caddy `:8443`
-- Снаружи всё выглядит как TLS 1.3 (SNI = `tls_domain` из конфига telemt)
-- UFW открывает только `:22`, `:80`, `:443`
+### MTProto (Telegram)
+
+```
+Клиент
+  → nodeA:443  (telemt, ee-prefix)
+    → SOCKS5:8083 → caddy-l4 → nodeN:443
+      → SOCKS5:8083 → caddy-l4 → nodeZ:443
+        → telemt → Telegram DC
+```
+
+Клиент видит один адрес (nodeA). Секрет MTProto не меняется никогда.
+
+### HTTP forward-proxy — режим "прямой выход"
+
+```
+Клиент → HTTP CONNECT → nodeA/nodeN/nodeZ:443
+  → caddy FP → target (выход с текущей ноды)
+```
+
+### HTTP forward-proxy — режим "выход через nodeZ"
+
+```
+Клиент → HTTP CONNECT → nodeA:443
+  → caddy FP (upstream = nodeN)
+    → caddy FP (upstream = nodeZ)
+      → caddy FP → target (выход с nodeZ)
+```
+
+Режим выхода задаётся один раз при установке ноды.
 
 ---
 
-## Почему MTProto chaining через SOCKS5
+## Цепочка для бота/сканера (антисканерная защита)
 
-telemt нативно не поддерживает пересылку MTProto на другой telemt.  
-Официальный double-hop требует HAProxy + AmneziaWG — избыточно.
+Бот подключается к ноде без MTProto и без валидных кредов forward-proxy.
 
-Наш подход:
 ```
-telemt [upstream] type = "socks5"  →  127.0.0.1:8083
-caddy-l4 SOCKS5 :8083  →  NEXT_HOP:443
+Бот → nodeZ:443
+  telemt: нет префикса ee
+    → TCP-splice → caddy RP:8443
+      caddy RP (nodeZ) → предыдущая нода (nodeN):443
+        telemt nodeN: снова нет ee
+          → caddy RP (nodeN) → предыдущая нода (nodeA):443
+            caddy RP (nodeA) → localhost:8081
+              .NET 10 minimal API → обычная HTML-страница
+
+Бот видит: легитимная веб-инфраструктура, без признаков прокси
 ```
 
-caddy-l4 на `:8083` слушает только на `127.0.0.1` — снаружи не доступен.
+Схема "бот → первая нода":
+
+```
+Бот → nodeA:443
+  telemt: нет ee
+    → caddy RP:8443
+      → localhost:8081
+        → .NET 10 → HTML-страница
+```
+
+---
+
+## Минимальная конфигурация (1 нода, nodeA = nodeZ)
+
+```
+Клиент
+  → nodeA:443 (telemt)
+    ├─ MTProto → Telegram DC напрямую  (NEXT_HOP не задан)
+    └─ HTTPS   → caddy:8443
+        ├─ HTTP CONNECT → caddy FP → target
+        └─ reverse-proxy → localhost:8081 (.NET 10)
+
+Бот → nodeA:443 → caddy RP → .NET 10 → HTML
+```
 
 ---
 
 ## Таблица портов
 
-| Порт | Сервис | Все ноды | Только node0 | Снаружи |
-|---|---|---|---|---|
-| `:80` | Caddy — ACME / LE cert | ✅ | | ✅ |
-| `:443` | telemt — MTProto + TLS mask | ✅ | | ✅ |
-| `:8081` | backend (.NET 10) | | ✅ | ❌ |
-| `:8082` | Telegram Local Server | | ✅ | ❌ |
-| `:8083` | caddy-l4 SOCKS5 (telemt upstream) | ✅ | | ❌ |
-| `:8443` | Caddy HTTPS (FP + RP) | ✅ | | ❌ |
-| `:9091` | telemt API | ✅ | | ❌ |
+| Порт | Сервис | nodeA | nodeN | nodeZ | Публичный |
+|---|---|---|---|---|---|
+| `:80` | Caddy — ACME / LE | ✅ | ✅ | ✅ | ✅ |
+| `:443` | telemt — MTProto + TLS mask | ✅ | ✅ | ✅ | ✅ |
+| `:8081` | .NET 10 minimal API | ✅ | ❌ | ❌ | ❌ |
+| `:8082` | Telegram Local Server | ✅ | ❌ | ❌ | ❌ |
+| `:8083` | caddy-l4 SOCKS5 (telemt upstream) | ✅ | ✅ | ✅ | ❌ |
+| `:8443` | Caddy HTTPS (FP + RP) | ✅ | ✅ | ✅ | ❌ |
+| `:9091` | telemt API (internal) | ✅ | ✅ | ✅ | ❌ |
 
 ---
 
@@ -101,19 +178,19 @@ public_port = 443
 port = 443
 
 [server.api]
-enabled  = true
-listen   = "127.0.0.1:9091"
+enabled   = true
+listen    = "127.0.0.1:9091"
 whitelist = ["127.0.0.0/8"]
 
 [censorship]
-tls_domain    = "TELEMT_TLS_DOMAIN"   # SNI-домен для TLS-fronting
+tls_domain    = "TELEMT_TLS_DOMAIN"
 mask          = true
 mask_host     = "127.0.0.1"
-mask_port     = 8443                   # non-MTProto → Caddy
+mask_port     = 8443
 tls_emulation = true
 tls_front_dir = "/etc/telemt/tlsfront"
 
-# --- только для nodeN (NEXT_HOP != "") ---
+# --- только для nodeA / nodeN (NEXT_HOP задан) ---
 [upstream]
 type = "socks5"
 
@@ -122,53 +199,72 @@ host     = "127.0.0.1"
 port     = 8083
 username = "SOCKS5_USER"
 password = "SOCKS5_PASS"
-# --- конец блока nodeN ---
+# --- конец блока ---
 
 [access.users]
-# ключ — 32 hex символа (openssl rand -hex 16 или SHA256(name)[:32])
-USER_ALIAS = "32_HEX_SECRET"
+USER_ALIAS = "32_HEX_SECRET"   # openssl rand -hex 16
 ```
 
-### Caddy — Caddyfile (nodeN)
+### Caddy — Caddyfile (nodeA)
 
 ```caddyfile
 {
     http_port  80
     https_port 8443
     admin      off
+    order forward_proxy before reverse_proxy
 }
 
 NODE_DOMAIN {
+    header -Server
+    header -X-Powered-By
+
     forward_proxy {
-        basicauth FP_USER1 FP_PASS1
-        basicauth FP_USER2 FP_PASS2
-        probe_resistance         # без auth выглядит как обычный сайт
-    }
-    reverse_proxy NEXT_HOP:443 {
-        transport http { tls }
-    }
-}
-```
-
-### Caddy — Caddyfile (node0)
-
-```caddyfile
-{
-    http_port  80
-    https_port 8443
-    admin      off
-}
-
-NODE_DOMAIN {
-    forward_proxy {
-        basicauth FP_USER1 FP_PASS1
+        basic_auth FP_USER FP_PASS
         probe_resistance
+        hide_ip
+        hide_via
+        # режим "через nodeZ": добавить upstream → NEXT_HOP:443
     }
-    reverse_proxy localhost:8081
+
+    handle {
+        reverse_proxy localhost:8081
+    }
 }
 ```
 
-### caddy-l4 — SOCKS5 config (все ноды, :8083, internal)
+### Caddy — Caddyfile (nodeN / nodeZ)
+
+```caddyfile
+{
+    http_port  80
+    https_port 8443
+    admin      off
+    order forward_proxy before reverse_proxy
+}
+
+NODE_DOMAIN {
+    header -Server
+    header -X-Powered-By
+
+    forward_proxy {
+        basic_auth FP_USER FP_PASS
+        probe_resistance
+        hide_ip
+        hide_via
+        # режим "через nodeZ": добавить upstream → NEXT_HOP:443
+    }
+
+    handle {
+        # reverse_proxy → ПРЕДЫДУЩАЯ нода (антисканер)
+        reverse_proxy PREV_HOP:443 {
+            transport http { tls }
+        }
+    }
+}
+```
+
+### caddy-l4 — SOCKS5 (все ноды, 127.0.0.1:8083)
 
 ```json
 {
@@ -194,74 +290,79 @@ NODE_DOMAIN {
 
 ---
 
-## Цепочка из двух нод (пример)
+## Полная схема (3 ноды: nodeA → nodeN → nodeZ)
 
 ```
-[client / MS SQL]
-      │  HTTPS :443
-      ▼
-╔════════════════════╗
-║  observer A        ║  видит: TLS 1.3 :443, SNI = tls_domain
-╚════════════════════╝
-      │
-      ▼
-┌──────────────────────────────────┐
-│  nodeN                           │
-│                                  │
-│  :443  telemt                    │
-│    ├─ MTProto  → :8083 SOCKS5    │
-│    └─ HTTPS   → :8443 Caddy      │
-│         ├─ CONNECT → caddy FP    │
-│         └─ REST    → caddy RP    │
-│              → NEXT_HOP:443      │
-└─────────────────┬────────────────┘
-                  │  HTTPS :443
-╔═════════════════╪══════════════╗
-║  observer B     │              ║
-╚═════════════════╪══════════════╝
-                  │
-                  ▼
-┌──────────────────────────────────┐
-│  node0                           │
-│                                  │
-│  :443  telemt                    │
-│    ├─ MTProto  → Telegram DC     │
-│    └─ HTTPS   → :8443 Caddy      │
-│         ├─ CONNECT → caddy FP    │
-│         └─ REST    → :8081 .NET  │
-│                                  │
-│  :8081  backend (.NET 10)        │
-│  :8082  Telegram Local Server    │
-└──────────────────────────────────┘
+[Клиент]
+    │  TLS :443
+    ▼
+╔══════════════════════╗
+║  наблюдатель A       ║  видит: TLS 1.3, SNI = tls_domain
+╚══════════════════════╝
+    │
+    ▼
+┌────────────────────────────────────────────┐
+│  nodeA                                     │
+│                                            │
+│  :443  telemt                              │
+│    ├─ MTProto → :8083 SOCKS5 → nodeN:443  │
+│    └─ HTTPS   → :8443 caddy               │
+│        ├─ CONNECT → FP (→ target или chain)│
+│        └─ else   → RP → localhost:8081    │
+│                                            │
+│  :8081  .NET 10 minimal API               │
+│  :8082  Telegram Local Server             │
+└─────────────────────┬──────────────────────┘
+                      │  TLS :443
+╔═════════════════════╪════════════════════╗
+║  наблюдатель B      │                   ║
+╚═════════════════════╪════════════════════╝
+                      │
+                      ▼
+┌────────────────────────────────────────────┐
+│  nodeN                                     │
+│                                            │
+│  :443  telemt                              │
+│    ├─ MTProto → :8083 SOCKS5 → nodeZ:443  │
+│    └─ HTTPS   → :8443 caddy               │
+│        ├─ CONNECT → FP (→ target или chain)│
+│        └─ else (сканер) → RP → nodeA:443  │
+└─────────────────────┬──────────────────────┘
+                      │  TLS :443
+╔═════════════════════╪════════════════════╗
+║  наблюдатель C      │                   ║
+╚═════════════════════╪════════════════════╝
+                      │
+                      ▼
+┌────────────────────────────────────────────┐
+│  nodeZ                                     │
+│                                            │
+│  :443  telemt                              │
+│    ├─ MTProto → Telegram DC напрямую      │
+│    └─ HTTPS   → :8443 caddy               │
+│        ├─ CONNECT → FP → target           │
+│        └─ else (сканер) → RP → nodeN:443  │
+└────────────────────────────────────────────┘
+                      │
+                      ▼
+               [Telegram DC / target]
 ```
 
 ---
 
-## Сборка Caddy (xcaddy)
+## Почему SOCKS5
 
-Caddy собирается через `xcaddy` с двумя плагинами:
-
-```sh
-xcaddy build \
-  --with github.com/caddyserver/forwardproxy \
-  --with github.com/mholt/caddy-l4
-```
-
-Стандартный `apt install caddy` не содержит этих плагинов.  
-Сборка происходит в `services/caddy/build.sh`.
-
----
-
-## LE-сертификат
-
-Caddy автоматически получает сертификат от Let's Encrypt через ACME HTTP-01 challenge на `:80`.  
-telemt не терминирует TLS — он делает TCP-splice на Caddy `:8443`, Caddy сам держит LE-сертификат.
+telemt нативно не поддерживает форвардинг MTProto на другой telemt-инстанс.
+Решение: telemt отдаёт MTProto-поток в `upstream` типа SOCKS5 → `127.0.0.1:8083`,
+caddy-l4 принимает соединение и устанавливает исходящий TCP до `NEXT_HOP:443`.
+Зашифрованный MTProto-поток передаётся без расшифровки на промежуточных нодах.
+SOCKS5 слушает только на `127.0.0.1` — не виден снаружи.
 
 ---
 
 ## Смена ноды без изменений у клиента
 
-1. Новая нода разворачивается с тем же `NODE_DOMAIN`
-2. DNS-запись обновляется на IP новой ноды
-3. Клиент автоматически переходит на новую ноду
-4. Старая нода выводится из эксплуатации
+1. Новая нода разворачивается с тем же `NODE_DOMAIN` (или новым)
+2. Клиенту передаётся новый DNS-адрес
+3. Секреты MTProto и форвард-прокси не меняются
+4. Ссылка MTProto пересобирается только при смене домена: `ee{secret}{domain_hex}`
