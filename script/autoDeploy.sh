@@ -169,8 +169,26 @@ systemctl restart fail2ban
 ##########################
 ###
 ###
+###		INSTALL telemt
 ###
 ###
+
+
+echo "[telemt] Installing..."
+curl -fsSL https://raw.githubusercontent.com/telemt/telemt/main/install.sh | sh
+systemctl stop telemt
+
+
 ###
+###
+##########################
+##########################
+##########################
+###
+###
+###		SETUP telemt
+###
+
+
 
 
