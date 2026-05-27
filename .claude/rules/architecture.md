@@ -45,7 +45,7 @@ caddy :8443
   │
   ├─ HTTP CONNECT + валидный Basic Auth → forward-proxy
   │     ├─ FP_CHAIN=0  → target напрямую с текущей ноды
-  │     └─ FP_CHAIN=2  → HTTPS CONNECT → NEXT FP → ... → target
+  │     └─ FP_CHAIN=1  → HTTPS CONNECT → BACK_HOP → ... → target
   │
   ├─ HTTP CONNECT без auth → probe_resistance
   │     └─ 200 OK + HTML (запрос падает в reverse-proxy, прокси не детектируется)

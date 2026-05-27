@@ -21,7 +21,7 @@
 | Приложение | Задача |
 |---|---|
 | **telemt** | Слушает :443. Детектирует MTProto (префикс `ee`) и направляет напрямую в Telegram DC. Всё остальное TCP-splice → caddy :8443. `unknown_sni_action = "mask"` — неизвестный SNI уходит на caddy, не дропается. |
-| **caddy forward-proxy** | HTTP CONNECT для клиентов. `FP_CHAIN=0` — выход напрямую. `FP_CHAIN=2` — цепочка через HTTPS CONNECT. Задаётся при деплое ноды. |
+| **caddy forward-proxy** | HTTP CONNECT для клиентов. `FP_CHAIN=0` — выход напрямую. `FP_CHAIN=1` — цепочка через HTTPS CONNECT. Задаётся при деплое ноды. |
 | **caddy reverse-proxy** | Антисканерная защита. Трафик без валидного FP auth уходит на BACK_HOP: nodeN/nodeZ → предыдущая нода или nodeA, nodeA → localhost:8081. Клиент всегда видит легитимный сайт. |
 | **.NET 10 minimal API** | Backend Part 1 на nodeA (:8081). Принимает веб-запросы от caddy RP. Всегда возвращает валидный ответ. Опциональный компонент (замена - стандартная страница-заглушка Caddy, ничего самописного)|
 | **Telegram Local Server** | Локальный Bot API сервер на nodeA (:8082). Опциональный компонент. |
