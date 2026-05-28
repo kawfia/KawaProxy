@@ -169,7 +169,7 @@ systemctl restart fail2ban
 ##########################
 ###
 ###
-###		INSTALL telemt
+###		SETUP telemt
 ###
 ###
 
@@ -186,9 +186,232 @@ systemctl stop telemt
 ##########################
 ###
 ###
-###		SETUP telemt
+###		CONFIG telemt
 ###
 
 
+echo "[telemt] Writing config..."
+
+USERS_BLOCK=""
+for cred in "${TELEMT_CREDS[@]}"; do
+  _alias="${cred%%:*}"
+  _secret="${cred##*:}"
+  USERS_BLOCK+="${_alias} = \"${_secret}\""$'\n'
+done
+
+for (( i=1; i<=TELEMT_EXTRA; i++ )); do
+  _alias="extra${i}"
+  _secret="$(openssl rand -hex 16)"
+  USERS_BLOCK+="${_alias} = \"${_secret}\""$'\n'
+done
+
+cat > /etc/telemt/telemt.toml <<EOF
+[general]
+use_middle_proxy = false
+
+[general.modes]
+classic = false
+secure  = false
+tls     = true
+
+[general.links]
+show        = "*"
+public_host = "$NODE_DOMAIN"
+public_port = 443
+
+[server]
+port = 443
+
+[server.api]
+enabled   = true
+listen    = "127.0.0.1:9091"
+whitelist = ["127.0.0.0/8"]
+
+[censorship]
+tls_domain         = "$NODE_DOMAIN"
+unknown_sni_action = "mask"
+mask               = true
+mask_host          = "127.0.0.1"
+mask_port          = 8443
+tls_emulation      = true
+tls_front_dir      = "/etc/telemt/tlsfront"
+
+[access.users]
+${USERS_BLOCK}
+EOF
+
+systemctl enable telemt
+systemctl restart telemt
 
 
+###
+###
+##########################
+##########################
+##########################
+###
+###
+###		SETUP Telegram LS
+###
+###
+
+
+if [[ "$INSTALL_TG" == "1" ]]; then
+
+  echo "[telegram-bot-api] Installing build deps..."
+  apt-get install -y cmake g++ make zlib1g-dev libssl-dev gperf
+
+  echo "[telegram-bot-api] Cloning sources..."
+  [[ ! -d /opt/tg-bot-api-src ]] && \
+    git clone --recursive https://github.com/tdlib/telegram-bot-api.git /opt/tg-bot-api-src
+
+  echo "[telegram-bot-api] Building..."
+  cmake -DCMAKE_BUILD_TYPE=Release \
+    -S /opt/tg-bot-api-src \
+    -B /opt/tg-bot-api-src/build
+  cmake --build /opt/tg-bot-api-src/build --target install
+
+  mkdir -p /var/lib/telegram-bot-api
+  chown nobody:nogroup /var/lib/telegram-bot-api
+
+  cat > /etc/systemd/system/telegram-bot-api.service <<EOF
+[Unit]
+Description=Telegram Bot API Server
+After=network.target
+
+[Service]
+User=nobody
+WorkingDirectory=/var/lib/telegram-bot-api
+ExecStart=/usr/local/bin/telegram-bot-api --local --http-port=8082 --api-id=${TG_API_ID} --api-hash=${TG_API_HASH}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable telegram-bot-api
+  systemctl restart telegram-bot-api
+
+fi
+
+
+###
+###
+##########################
+##########################
+##########################
+###
+###
+###		SETUP .NET 10
+###
+###
+
+
+if [[ "$INSTALL_DOTNET" == "1" ]]; then
+
+  echo "[dotnet] Installing .NET 10 SDK..."
+  wget -O /tmp/packages-microsoft-prod.deb \
+    https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
+  dpkg -i /tmp/packages-microsoft-prod.deb
+  apt-get update
+  apt-get install -y dotnet-sdk-10.0
+
+fi
+
+
+###
+###
+##########################
+##########################
+##########################
+###
+###
+###     SETUP Caddy
+###
+###
+
+
+echo "[caddy] Installing golang-go..."
+apt-get install -y golang-go
+
+echo "[caddy] Adding apt repository..."
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+  | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+  | tee /etc/apt/sources.list.d/caddy-stable.list
+apt-get update
+apt-get install -y caddy
+
+systemctl stop caddy
+
+echo "[caddy] Installing xcaddy..."
+GOPATH=/root/go go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
+
+echo "[caddy] Building with forwardproxy (2-5 min)..."
+GOPATH=/root/go /root/go/bin/xcaddy build \
+  --output /usr/bin/caddy \
+  --with github.com/caddyserver/forwardproxy@caddy2
+
+setcap cap_net_bind_service=+ep /usr/bin/caddy
+
+
+###
+###
+##########################
+##########################
+##########################
+###
+###
+###     CONFIG Caddy
+###
+###
+
+
+echo "[caddy] Writing Caddyfile..."
+
+FP_AUTH_BLOCK=""
+for cred in "${FP_CREDS[@]}"; do
+  _user="${cred%%:*}"
+  _pass="${cred##*:}"
+  FP_AUTH_BLOCK+="    basic_auth ${_user} ${_pass}"$'\n'
+done
+
+for (( i=1; i<=FP_EXTRA; i++ )); do
+  _user="extra${i}"
+  _pass="$(openssl rand -base64 12 | tr -d '=/+')"
+  FP_AUTH_BLOCK+="    basic_auth ${_user} ${_pass}"$'\n'
+done
+
+if [[ "$INSTALL_DOTNET" == "1" ]]; then
+  _handle="reverse_proxy localhost:8081"
+elif [[ -n "$BACK_HOP" ]]; then
+  _handle="reverse_proxy ${BACK_HOP}"
+else
+  _handle="file_server"
+fi
+
+cat > /etc/caddy/Caddyfile <<EOF
+{
+  http_port  80
+  https_port 8443
+  admin      off
+  order forward_proxy before reverse_proxy
+}
+
+${NODE_DOMAIN} {
+  forward_proxy {
+${FP_AUTH_BLOCK}    probe_resistance ${NODE_DOMAIN}
+    hide_ip
+    hide_via
+  }
+
+  handle {
+    ${_handle}
+  }
+}
+EOF
+
+systemctl enable caddy
+systemctl restart caddy
